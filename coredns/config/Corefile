@@ -1,0 +1,23 @@
+# /etc/coredns/Corefile
+
+# Health check endpoint
+health.check:9153 {
+    whoami
+    log
+}
+
+# Global DNS with auto-loading all zones from directory
+.:53 {
+    auto {
+        directory /etc/coredns/zones
+        reload 5s
+    }
+    forward . 8.8.8.8 9.9.9.9 1.1.1.1 {
+        policy sequential
+        health_check 5s
+    }
+    cache 300
+    log
+    errors
+    prometheus :9153
+}

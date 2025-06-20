@@ -1,0 +1,102 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: dns-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-coredns}
+      POSTGRES_USER: ${POSTGRES_USER:-coredns}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - dns-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-coredns} -d ${POSTGRES_DB:-coredns}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # CoreDNS Server (file-based zones)
+  coredns:
+    image: coredns/coredns:latest
+    container_name: coredns-server
+    ports:
+      - "53:53/udp"
+      - "53:53/tcp"
+      - "9153:9153/tcp"
+    volumes:
+      - ./coredns/config/Corefile:/etc/coredns/Corefile:ro
+      - coredns_zones:/etc/coredns/zones
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - dns-net
+    healthcheck:
+      test: ["CMD", "dig", "@127.0.0.1", "health.check", "A"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: ["-conf", "/etc/coredns/Corefile"]
+
+  # Go Zone File Generator
+  dns-reloader:
+    build: ./dns-reloader
+    container_name: dns-reloader
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_DB=${POSTGRES_DB:-coredns}
+      - POSTGRES_USER=${POSTGRES_USER:-coredns}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - COREDNS_CONTAINER=coredns-server
+      - ZONES_DIRECTORY=/etc/coredns/zones
+      - LOG_LEVEL=info
+      - POLL_INTERVAL=5s
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - coredns_zones:/etc/coredns/zones
+    depends_on:
+      postgres:
+        condition: service_healthy
+      coredns:
+        condition: service_started
+    restart: unless-stopped
+    networks:
+      - dns-net
+
+  # NextJS Admin Dashboard (commented out for now)
+  # nextjs-admin:
+  #   build: ./nextjs-admin
+  #   container_name: dns-admin
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - POSTGRES_HOST=postgres
+  #     - POSTGRES_DB=${POSTGRES_DB:-coredns}
+  #     - POSTGRES_USER=${POSTGRES_USER:-coredns}
+  #     - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+  #     - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+  #     - NEXTAUTH_URL=http://localhost:3000
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   networks:
+  #     - dns-net
+  #   profiles: ["admin"]
+
+networks:
+  dns-net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  coredns_zones:  # Shared volume for zone files
